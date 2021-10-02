@@ -101,7 +101,7 @@ def lex(body):
       text = ""
 
     else:
-      if (char == "&"):
+      if (not in_tag and char == "&"):
         entity_symbol, skip_chars = get_entity_symbol()
         position += skip_chars
         text += entity_symbol
