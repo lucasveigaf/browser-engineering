@@ -9,6 +9,15 @@ WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 SCROLL_STEP = 70
 
+FONTS = {}
+
+def get_font(size, weight, slant):
+    key = (size, weight, slant)
+    if key not in FONTS:
+        font = tkinter.font.Font(size=size, weight=weight, slant=slant)
+        FONTS[key] = font
+    return FONTS[key]
+
 class Text:
     def __init__(self, text):
         self.text = text
@@ -143,11 +152,7 @@ class Layout:
     self.cursor_y = baseline + 1.2 * max_descent
 
   def text(self, token):
-    font = tkinter.font.Font(
-      size=self.size,
-      weight=self.weight,
-      slant=self.style,
-    )
+    font = get_font(self.size, self.weight, self.style)
     for word in re.findall(r'\S+|\n', token.text):
       # if word == "\n":
       #   self.cursor_y += VSTEP * 2.0
