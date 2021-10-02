@@ -19,12 +19,23 @@ def get_font(size, weight, slant):
     return FONTS[key]
 
 class Text:
-    def __init__(self, text):
+    def __init__(self, text, parent):
         self.text = text
+        self.children = []
+        self.parent = parent
 
-class Tag:
-    def __init__(self, tag):
+    def __repr__(self):
+        return repr(self.text)
+
+class Element:
+    def __init__(self, tag, attributes, parent):
         self.tag = tag
+        self.children = []
+        self.parent = parent
+        self.attributes = attributes
+
+    def __repr__(self):
+      return "<" + self.tag + ">"
 
 def request(url, redirectcount = 0):
     scheme, url = url.split("://", 1)
@@ -71,59 +82,148 @@ def request(url, redirectcount = 0):
     s.close()
     return headers, body
 
+def print_tree(node, indent=0):
+  print(" " * indent, node)
+  for child in node.children:
+    print_tree(child, indent + 2)
 
-def lex(body):
-  out = []
-  text = ""
-  in_tag = False
-  position = 0
+class HTMLParser:
+  SELF_CLOSING_TAGS = [
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+  ]
 
-  def _get_element(end_char):
-    return body[position:body.find(end_char, position + 1)]
+  HEAD_TAGS = [
+      "base", "basefont", "bgsound", "noscript",
+      "link", "meta", "title", "style", "script",
+  ]
 
-  def get_entity_symbol():
-    entity = _get_element(";")
-    parsed_entity = ""
-    if entity == "amp":
-      parsed_entity = "&"
-    elif entity == "lt":
-      parsed_entity = "<"
-    elif entity == "gt":
-      parsed_entity = ">"
+  def __init__(self, body):
+      self.body = body
+      self.unfinished = []
 
-    return parsed_entity, len(entity) + 1
+  def implicit_tags(self, tag):
+    while True:
+      open_tags = [node.tag for node in self.unfinished]
+      if open_tags == [] and tag != "html":
+        self.add_tag("html")
+      elif open_tags == ["html"] and tag not in ["head", "body", "/html"]:
+        if tag in self.HEAD_TAGS:
+          self.add_tag("head")
+        else:
+          self.add_tag("body")
+      elif open_tags == ["html", "head"] and tag not in ["/head"] + self.HEAD_TAGS:
+        self.add_tag("/head")
+      else:
+        break
 
-  while position < len(body):
-    char = body[position]
-    position += 1
+  def add_text(self, text):
+    if text.isspace():
+      return
+    
+    self.implicit_tags(None)
+    parent = self.unfinished[-1]
+    node = Text(text, parent)
+    parent.children.append(node)
 
-    if char == "<":
-      in_tag = True
-      if text:
-        out.append(Text(text))
+  def get_attributes(self, text):
+    parts = text.split()
+    tag = parts[0].lower()
+    attributes = {}
+    for attrpair in parts[1:]:
+      if "=" in attrpair:
+        key, value = attrpair.split("=", 1)
+        if len(value) > 2 and value[0] in ["'", "\""]:
+          value = value[1:-1]
+        attributes[key.lower()] = value
+      else:
+        attributes[attrpair.lower()] = ""
+  
+    return tag, attributes
 
-      text = ""
+  def add_tag(self, tag):
+    tag, attributes = self.get_attributes(tag)
+    if tag.startswith("!"):
+      return
 
-    elif char == ">":
-      in_tag = False
-      out.append(Tag(text))
-      text = ""
+    self.implicit_tags(tag)
+    if tag.startswith("/"):
+      if len(self.unfinished) == 1:
+        return
+
+      node = self.unfinished.pop()
+      parent = self.unfinished[-1]
+      parent.children.append(node)
+
+    elif tag in self.SELF_CLOSING_TAGS:
+      parent = self.unfinished[-1]
+      node = Element(tag, attributes, parent)
+      parent.children.append(node)
 
     else:
-      if (not in_tag and char == "&"):
-        entity_symbol, skip_chars = get_entity_symbol()
-        position += skip_chars
-        text += entity_symbol
+      parent = self.unfinished[-1] if self.unfinished else None
+      node = Element(tag, attributes, parent)
+      self.unfinished.append(node)
+
+  def finish(self):
+    while len(self.unfinished) > 1:
+      node = self.unfinished.pop()
+      parent = self.unfinished[-1]
+      parent.children.append(node)
+
+    return self.unfinished.pop()
+
+  def parse(self):
+    text = ""
+    in_tag = False
+    position = 0
+
+    def _get_element(end_char):
+      return self.body[position:self.body.find(end_char, position + 1)]
+
+    def get_entity_symbol():
+      entity = _get_element(";")
+      parsed_entity = ""
+      if entity == "amp":
+        parsed_entity = "&"
+      elif entity == "lt":
+        parsed_entity = "<"
+      elif entity == "gt":
+        parsed_entity = ">"
+
+      return parsed_entity, len(entity) + 1
+
+    while position < len(self.body):
+      char = self.body[position]
+      position += 1
+
+      if char == "<":
+        in_tag = True
+        if text:
+          self.add_text(text)
+
+        text = ""
+
+      elif char == ">":
+        in_tag = False
+        self.add_tag(text)
+        text = ""
+
       else:
-        text += char
+        if (not in_tag and char == "&"):
+          entity_symbol, skip_chars = get_entity_symbol()
+          position += skip_chars
+          text += entity_symbol
+        else:
+          text += char
 
-  if not in_tag and text:
-    out.append(Text(text))
+    if not in_tag and text:
+      self.add_text(text)
 
-  return out
+    return self.finish()
 
 class Layout:
-  def __init__(self, tokens):
+  def __init__(self, node_tree):
     self.display_list = []
     self.line = []
     self.cursor_x = HSTEP
@@ -132,8 +232,7 @@ class Layout:
     self.style = "roman"
     self.size = 16
     self.in_body = False
-    for token in tokens:
-      self.token(token)
+    self.recurse(node_tree)
 
     self.flush()
 
@@ -165,34 +264,40 @@ class Layout:
       self.line.append((self.cursor_x, word, font))
       self.cursor_x += w + font.measure(" ")
 
-  def token(self, token):
-    if isinstance(token, Text):
-      if self.in_body: self.text(token)
-    elif token.tag.startswith("body"):
-      self.in_body = True
-    elif token.tag == "/body":
-      self.in_body = False
-    elif token.tag in ["em", "i"]:
+  def open_tag(self, tag):
+    if tag in ["em", "i"]:
       self.style = "italic"
-    elif token.tag in ["/em", "/i"]:
-      self.style = "roman"
-    elif token.tag in ["b", "strong"]:
+    elif tag in ["b", "strong"]:
       self.weight = "bold"
-    elif token.tag in ["/b", "/strong"]:
-      self.weight = "normal"
-    elif token.tag == "small":
+    elif tag == "small":
       self.size -= 2
-    elif token.tag == "/small":
-      self.size += 2
-    elif token.tag == "big":
+    elif tag == "big":
       self.size += 4
-    elif token.tag == "/big":
-      self.size -= 4
-    elif token.tag == "br":
+    elif tag == "br":
       self.flush()
-    elif token.tag == "/p":
+
+  def close_tag(self, tag):
+    if tag in ["em", "i"]:
+      self.style = "roman"
+    elif tag in ["b", "strong"]:
+      self.weight = "normal"
+    elif tag == "small":
+      self.size += 2
+    elif tag == "big":
+      self.size -= 4
+    elif tag == "p":
       self.flush()
       self.cursor_y += VSTEP
+
+  def recurse(self, tree):
+    if isinstance(tree, Text):
+      self.text(tree)
+    else:
+      self.open_tag(tree.tag)
+      for child in tree.children:
+        self.recurse(child)
+
+      self.close_tag(tree.tag)
 
 class Browser:
   def __init__(self):
@@ -223,8 +328,8 @@ class Browser:
 
   def load(self, url):
     headers, body = request(url)
-    tokens = lex(body)
-    self.display_list = Layout(tokens).display_list
+    self.nodes = HTMLParser(body).parse()
+    self.display_list = Layout(self.nodes).display_list
     self.draw()
 
   def draw(self):
